@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Private Call</title>
+
+<style>
+  body{margin:0;font-family:sans-serif;background:#000;height:100vh;overflow:hidden;}
+  #lockScreen{
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    background:#000;display:flex;flex-direction:column;
+    justify-content:center;align-items:center;color:#fff;z-index:9999;
+  }
+  #lockScreen input{
+    padding:12px;font-size:22px;width:150px;text-align:center;
+    border-radius:10px;border:none;margin-bottom:10px;
+  }
+  #lockScreen button{
+    padding:10px 20px;font-size:18px;border:none;border-radius:10px;
+    background:#0095f6;color:#fff;cursor:pointer;
+  }
+  #main{display:none;width:100%;height:100%;position:relative;}
+  #remoteVideo{
+    position:absolute;top:0;left:0;width:100%;height:100%;
+    background:#000;object-fit:cover;
+  }
+  #localVideo{
+    width:120px;height:160px;position:absolute;bottom:20px;right:20px;
+    background:#000;border-radius:10px;object-fit:cover;
+    cursor:pointer;z-index:10;
+  }
+  #controls{
+    position:absolute;bottom:10px;left:50%;transform:translateX(-50%);
+    display:flex;gap:10px;z-index:20;
+  }
+  #controls button{
+    padding:12px 15px;border:none;border-radius:50%;font-size:18px;
+    background:#111;color:#fff;opacity:.9;
+  }
+</style>
+</head>
+
+<body>
+
+<!-- PIN LOCK SCREEN -->
+<div id="lockScreen">
+  <h2>Enter 4-Digit PIN</h2>
+  <input id="pinInput" maxlength="4" placeholder="****">
+  <button onclick="unlock()">Join</button>
+  <p id="pinErr" style="color:red;margin-top:10px;"></p>
+</div>
+
+<!-- MAIN CALL UI -->
+<div id="main">
+  <video id="remoteVideo" autoplay playsinline></video>
+  <video id="localVideo" autoplay playsinline muted></video>
+
+  <div id="controls">
+    <button onclick="switchCam()">🔄</button>
+    <button onclick="toggleMute()" id="muteBtn">🎤</button>
+    <button onclick="toggleSpeaker()" id="spkBtn">🔊</button>
+    <button onclick="endCall()">❌</button>
+  </div>
+</div>
+
+<script>
+/* ---------------- PIN SYSTEM ---------------- */
+const ROOM_PIN = "1008";
+let isHost = false;
+let socket;
+let localStream;
+let pc;
+
+function unlock(){
+  let pin = document.getElementById("pinInput").value;
+  if(pin === ROOM_PIN){
+    document.getElementById("lockScreen").style.display="none";
+    initSocket();
+  } else {
+    document.getElementById("pinErr").innerText="Wrong PIN!";
+  }
+}
+
+/* ----------- SOCKET SIGNAL SERVER (FREE) ----------- */
+function initSocket(){
+  // FREE public WebSocket server (works for signalling)
+  socket = new WebSocket("wss://signal.yws.io");
+
+  socket.onopen = () => {
+    socket.send(JSON.stringify({type:"join", room:ROOM_PIN}));
+  };
+
+  socket.onmessage = (e)=>{
+    let msg = JSON.parse(e.data);
+
+    if(msg.selfHost){ isHost = true; }
+
+    if(msg.type === "offer"){
+      createAnswer(msg.offer);
+    }
+    if(msg.type === "answer"){
+      pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
+    }
+    if(msg.type === "ice"){
+      pc.addIceCandidate(msg.ice);
+    }
+  };
+
+  startCall();
+}
+
+/* -------------- VIDEO + WEBRTC ---------------- */
+async function startCall(){
+  localStream = await navigator.mediaDevices.getUserMedia({
+    video:{facingMode:"user"},
+    audio:true
+  });
+  document.getElementById("localVideo").srcObject = localStream;
+
+  pc = new RTCPeerConnection({
+    iceServers:[{urls:"stun:stun.l.google.com:19302"}]
+  });
+
+  localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
+
+  pc.ontrack = (e)=>{
+    document.getElementById("remoteVideo").srcObject = e.streams[0];
+  };
+
+  pc.onicecandidate = (e)=>{
+    if(e.candidate){
+      socket.send(JSON.stringify({type:"ice", ice:e.candidate, room:ROOM_PIN}));
+    }
+  };
+
+  if(isHost){
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.send(JSON.stringify({type:"offer", offer, room:ROOM_PIN}));
+  }
+
+  document.getElementById("main").style.display="block";
+}
+
+async function createAnswer(offer){
+  await pc.setRemoteDescription(new RTCSessionDescription(offer));
+  const ans = await pc.createAnswer();
+  await pc.setLocalDescription(ans);
+  socket.send(JSON.stringify({type:"answer", answer:ans, room:ROOM_PIN}));
+}
+
+/* ---------------- CAMERA SWITCH ---------------- */
+let facing = "user";
+async function switchCam(){
+  facing = facing === "user" ? "environment" : "user";
+
+  let newStream = await navigator.mediaDevices.getUserMedia({
+    video:{facingMode:facing},
+    audio:true
+  });
+
+  const videoTrack = newStream.getVideoTracks()[0];
+  const sender = pc.getSenders().find(s => s.track.kind === "video");
+  sender.replaceTrack(videoTrack);
+
+  document.getElementById("localVideo").srcObject = newStream;
+}
+
+/* ---------------- MUTE BUTTON ---------------- */
+let muted = false;
+function toggleMute(){
+  muted = !muted;
+  localStream.getAudioTracks()[0].enabled = !muted;
+  document.getElementById("muteBtn").innerText = muted ? "🔇" : "🎤";
+}
+
+/* ---------------- SPEAKER BUTTON ---------------- */
+let speaker = true;
+function toggleSpeaker(){
+  speaker = !speaker;
+  document.getElementById("remoteVideo").muted = !speaker;
+  document.getElementById("spkBtn").innerText = speaker ? "🔊" : "🔈";
+}
+
+/* ---------------- END CALL ---------------- */
+function endCall(){
+  pc.close();
+  alert("Call Ended");
+  location.reload();
+}
+
+/* ---------------- SWAP FULLSCREEN ---------------- */
+document.getElementById("localVideo").onclick = ()=>{
+  let remote = document.getElementById("remoteVideo");
+  let local = document.getElementById("localVideo");
+
+  let temp = remote.srcObject;
+  remote.srcObject = local.srcObject;
+  local.srcObject = temp;
+};
+
+/* ---------------- MOVE SMALL VIDEO ---------------- */
+let lv = document.getElementById("localVideo");
+lv.onmousedown = drag;
+lv.ontouchstart = drag;
+
+function drag(e){
+  e.preventDefault();
+  let move = (ev)=>{
+    let x = (ev.touches?ev.touches[0].clientX:ev.clientX) - 60;
+    let y = (ev.touches?ev.touches[0].clientY:ev.clientY) - 80;
+    lv.style.left = x+"px";
+    lv.style.top = y+"px";
+  };
+  document.onmousemove = move;
+  document.ontouchmove = move;
+  document.onmouseup = ()=>{document.onmousemove=null;};
+  document.ontouchend = ()=>{document.ontouchmove=null;};
+}
+</script>
+
+</body>
+                                     </html>
