@@ -1,224 +1,408 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Private Call</title>
-
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1" />
+<title>Mobile Video Call + Chat (WebRTC + PeerJS)</title>
+<script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
 <style>
-  body{margin:0;font-family:sans-serif;background:#000;height:100vh;overflow:hidden;}
-  #lockScreen{
-    position:fixed;top:0;left:0;width:100%;height:100%;
-    background:#000;display:flex;flex-direction:column;
-    justify-content:center;align-items:center;color:#fff;z-index:9999;
+  :root{
+    --accent:#0095f6;
+    --bg-gradient: linear-gradient(135deg,#f09433 0%,#e6683c 25%,#dc2743 50%,#cc2366 75%,#bc1888 100%);
   }
-  #lockScreen input{
-    padding:12px;font-size:22px;width:150px;text-align:center;
-    border-radius:10px;border:none;margin-bottom:10px;
+  html,body{height:100%;margin:0;font-family:Arial,Helvetica,sans-serif;background:var(--bg-gradient);-webkit-font-smoothing:antialiased;}
+  /* Password overlay */
+  #passwordScreen{
+    position:fixed;inset:0;background:rgba(0,0,0,0.85);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;color:white;
   }
-  #lockScreen button{
-    padding:10px 20px;font-size:18px;border:none;border-radius:10px;
-    background:#0095f6;color:#fff;cursor:pointer;
+  #passwordScreen h2{margin:0 0 14px;font-size:22px;}
+  #passwordScreen input{width:140px;padding:12px;font-size:20px;text-align:center;border-radius:10px;border:none;outline:none;}
+  #passwordScreen button{margin-top:12px;padding:10px 18px;border-radius:10px;border:none;background:var(--accent);color:#fff;font-weight:600}
+
+  /* App layout - Mobile vertical */
+  .app {
+    position:relative;
+    width:100%;
+    height:100vh;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+    box-sizing:border-box;
+    padding:8px;
   }
-  #main{display:none;width:100%;height:100%;position:relative;}
-  #remoteVideo{
-    position:absolute;top:0;left:0;width:100%;height:100%;
-    background:#000;object-fit:cover;
+
+  /* top: room link bar */
+  .room-bar{
+    display:flex;gap:8px;align-items:center;background:rgba(255,255,255,0.9);padding:8px;border-radius:10px;
   }
+  .room-bar input{flex:1;padding:8px;border-radius:8px;border:1px solid #ddd}
+  .room-bar button{padding:8px 10px;border-radius:8px;border:none;background:var(--accent);color:#fff;font-weight:600}
+
+  /* video wrap */
+  .video-wrap{position:relative;flex:1;display:flex;align-items:center;justify-content:center;border-radius:12px;overflow:hidden;background:#000}
+  video{display:block;object-fit:cover;width:100%;height:100%}
+
+  /* local small video (PIP) */
   #localVideo{
-    width:120px;height:160px;position:absolute;bottom:20px;right:20px;
-    background:#000;border-radius:10px;object-fit:cover;
-    cursor:pointer;z-index:10;
+    position:absolute;right:12px;bottom:110px;width:110px;height:150px;border-radius:10px;border:2px solid rgba(255,255,255,0.9);background:#000;z-index:30;object-fit:cover;cursor:pointer;
+    transition:all .25s ease;
   }
-  #controls{
-    position:absolute;bottom:10px;left:50%;transform:translateX(-50%);
-    display:flex;gap:10px;z-index:20;
+  #localVideo.minimized{width:80px;height:110px;opacity:0.9}
+  #remoteVideo.small{width:140px;height:190px;right:12px;bottom:110px;position:absolute;border-radius:10px;border:2px solid rgba(255,255,255,0.9);z-index:20;object-fit:cover}
+
+  /* controls row big buttons */
+  .controls{
+    display:flex;gap:12px;justify-content:center;align-items:center;padding:8px;
   }
-  #controls button{
-    padding:12px 15px;border:none;border-radius:50%;font-size:18px;
-    background:#111;color:#fff;opacity:.9;
+  .controls button{
+    flex:0 0 78px;height:48px;border-radius:999px;border:none;background:rgba(0,0,0,0.6);color:white;font-size:18px;display:flex;align-items:center;justify-content:center;gap:8px;
+  }
+  .controls button.end{background:#ff3b30}
+
+  /* chat area bottom */
+  .chat {
+    background:rgba(255,255,255,0.95);border-radius:12px;padding:8px;display:flex;flex-direction:column;gap:8px;
+    max-height:260px;overflow:hidden;
+  }
+  .messages{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:6px}
+  .msg{max-width:74%;padding:8px;border-radius:12px;background:#f1f1f1;color:#111}
+  .msg.sent{align-self:flex-end;background:#dcf8c6}
+  .msg.received{align-self:flex-start;background:#fff;border:1px solid #e2e2e2}
+
+  .chat-input{display:flex;gap:8px;align-items:center}
+  .chat-input input[type="text"]{flex:1;padding:10px;border-radius:10px;border:1px solid #ddd;outline:none}
+  .chat-input input[type="file"]{display:none}
+  .file-label{padding:10px 12px;border-radius:10px;background:var(--accent);color:#fff;cursor:pointer}
+
+  /* responsive tweaks */
+  @media(min-width:900px){
+    .app{max-width:900px;margin:10px auto;height:92vh}
+    #localVideo{right:18px;bottom:120px}
   }
 </style>
 </head>
-
 <body>
-
-<!-- PIN LOCK SCREEN -->
-<div id="lockScreen">
-  <h2>Enter 4-Digit PIN</h2>
-  <input id="pinInput" maxlength="4" placeholder="****">
-  <button onclick="unlock()">Join</button>
-  <p id="pinErr" style="color:red;margin-top:10px;"></p>
-</div>
-
-<!-- MAIN CALL UI -->
-<div id="main">
-  <video id="remoteVideo" autoplay playsinline></video>
-  <video id="localVideo" autoplay playsinline muted></video>
-
-  <div id="controls">
-    <button onclick="switchCam()">🔄</button>
-    <button onclick="toggleMute()" id="muteBtn">🎤</button>
-    <button onclick="toggleSpeaker()" id="spkBtn">🔊</button>
-    <button onclick="endCall()">❌</button>
+  <!-- PASSWORD SCREEN -->
+  <div id="passwordScreen">
+    <h2>Enter 4-Digit Password</h2>
+    <input id="passInput" maxlength="4" placeholder="****" inputmode="numeric" />
+    <button id="passBtn">Unlock</button>
+    <p id="passError" style="color:#ff8888;margin-top:10px"></p>
   </div>
-</div>
+
+  <!-- APP -->
+  <div class="app" id="app" style="display:none">
+    <!-- room link -->
+    <div class="room-bar">
+      <input id="roomLink" readonly placeholder="Room link will generate when unlocked">
+      <button id="copyBtn">Copy</button>
+    </div>
+
+    <!-- video area -->
+    <div class="video-wrap" id="videoWrap">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <video id="localVideo" autoplay muted playsinline></video>
+    </div>
+
+    <!-- controls -->
+    <div class="controls">
+      <button id="switchBtn">🔄</button>
+      <button id="muteBtn">🎤</button>
+      <button id="speakerBtn">🔊</button>
+      <button id="endBtn" class="end">❌</button>
+    </div>
+
+    <!-- chat -->
+    <div class="chat">
+      <div class="messages" id="messages"></div>
+      <div class="chat-input">
+        <input type="text" id="textInput" placeholder="Type a message..." />
+        <label class="file-label" title="Send image/video">
+          📎
+          <input type="file" id="fileInput" accept="image/*,video/*">
+        </label>
+        <button id="sendBtn" style="padding:10px 12px;background:var(--accent);color:#fff;border:none;border-radius:8px">Send</button>
+      </div>
+    </div>
+  </div>
 
 <script>
-/* ---------------- PIN SYSTEM ---------------- */
-const ROOM_PIN = "1008";
-let isHost = false;
-let socket;
-let localStream;
-let pc;
+/* ---------------- constants & elements ---------------- */
+const PASSWORD = "1008";
+const passScreen = document.getElementById('passwordScreen');
+const passInput = document.getElementById('passInput');
+const passBtn = document.getElementById('passBtn');
+const passError = document.getElementById('passError');
 
-function unlock(){
-  let pin = document.getElementById("pinInput").value;
-  if(pin === ROOM_PIN){
-    document.getElementById("lockScreen").style.display="none";
-    initSocket();
-  } else {
-    document.getElementById("pinErr").innerText="Wrong PIN!";
-  }
-}
+const appDiv = document.getElementById('app');
+const roomLinkInput = document.getElementById('roomLink');
+const copyBtn = document.getElementById('copyBtn');
 
-/* ----------- SOCKET SIGNAL SERVER (FREE) ----------- */
-function initSocket(){
-  // FREE public WebSocket server (works for signalling)
-  socket = new WebSocket("wss://signal.yws.io");
+const remoteVideo = document.getElementById('remoteVideo');
+const localVideo = document.getElementById('localVideo');
 
-  socket.onopen = () => {
-    socket.send(JSON.stringify({type:"join", room:ROOM_PIN}));
-  };
+const switchBtn = document.getElementById('switchBtn');
+const muteBtn = document.getElementById('muteBtn');
+const speakerBtn = document.getElementById('speakerBtn');
+const endBtn = document.getElementById('endBtn');
 
-  socket.onmessage = (e)=>{
-    let msg = JSON.parse(e.data);
+const messagesDiv = document.getElementById('messages');
+const textInput = document.getElementById('textInput');
+const fileInput = document.getElementById('fileInput');
+const sendBtn = document.getElementById('sendBtn');
 
-    if(msg.selfHost){ isHost = true; }
-
-    if(msg.type === "offer"){
-      createAnswer(msg.offer);
-    }
-    if(msg.type === "answer"){
-      pc.setRemoteDescription(new RTCSessionDescription(msg.answer));
-    }
-    if(msg.type === "ice"){
-      pc.addIceCandidate(msg.ice);
-    }
-  };
-
-  startCall();
-}
-
-/* -------------- VIDEO + WEBRTC ---------------- */
-async function startCall(){
-  localStream = await navigator.mediaDevices.getUserMedia({
-    video:{facingMode:"user"},
-    audio:true
-  });
-  document.getElementById("localVideo").srcObject = localStream;
-
-  pc = new RTCPeerConnection({
-    iceServers:[{urls:"stun:stun.l.google.com:19302"}]
-  });
-
-  localStream.getTracks().forEach(t=>pc.addTrack(t, localStream));
-
-  pc.ontrack = (e)=>{
-    document.getElementById("remoteVideo").srcObject = e.streams[0];
-  };
-
-  pc.onicecandidate = (e)=>{
-    if(e.candidate){
-      socket.send(JSON.stringify({type:"ice", ice:e.candidate, room:ROOM_PIN}));
-    }
-  };
-
-  if(isHost){
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-    socket.send(JSON.stringify({type:"offer", offer, room:ROOM_PIN}));
-  }
-
-  document.getElementById("main").style.display="block";
-}
-
-async function createAnswer(offer){
-  await pc.setRemoteDescription(new RTCSessionDescription(offer));
-  const ans = await pc.createAnswer();
-  await pc.setLocalDescription(ans);
-  socket.send(JSON.stringify({type:"answer", answer:ans, room:ROOM_PIN}));
-}
-
-/* ---------------- CAMERA SWITCH ---------------- */
-let facing = "user";
-async function switchCam(){
-  facing = facing === "user" ? "environment" : "user";
-
-  let newStream = await navigator.mediaDevices.getUserMedia({
-    video:{facingMode:facing},
-    audio:true
-  });
-
-  const videoTrack = newStream.getVideoTracks()[0];
-  const sender = pc.getSenders().find(s => s.track.kind === "video");
-  sender.replaceTrack(videoTrack);
-
-  document.getElementById("localVideo").srcObject = newStream;
-}
-
-/* ---------------- MUTE BUTTON ---------------- */
+/* ---------------- state ---------------- */
+let peer, conn, currentCall, localStream;
+let facingMode = 'user';
 let muted = false;
-function toggleMute(){
+let speakerOn = true;
+
+/* ---------------- password handling ---------------- */
+passBtn.addEventListener('click', () => tryUnlock());
+passInput.addEventListener('keydown', e => { if(e.key === 'Enter') tryUnlock(); });
+
+function tryUnlock(){
+  const v = passInput.value.trim();
+  if(v === PASSWORD){
+    passScreen.style.display = 'none';
+    appDiv.style.display = 'flex';
+    initApp();
+  } else {
+    passError.textContent = 'Wrong password';
+    setTimeout(()=>passError.textContent='',2000);
+  }
+}
+
+/* ---------------- helpers: UI message ---------------- */
+function addMessage(text, type='received', fileType){
+  const el = document.createElement('div');
+  el.className = 'msg ' + (type==='sent'?'sent':'received');
+  if(fileType){
+    if(fileType.startsWith('image')){
+      const img = document.createElement('img');
+      img.src = text;
+      img.style.maxWidth = '220px';
+      img.style.borderRadius = '8px';
+      el.appendChild(img);
+    } else if(fileType.startsWith('video')){
+      const v = document.createElement('video');
+      v.src = text; v.controls = true;
+      v.style.maxWidth = '220px';
+      v.style.borderRadius = '8px';
+      el.appendChild(v);
+    } else {
+      el.textContent = '[file]';
+    }
+  } else {
+    el.textContent = text;
+  }
+  messagesDiv.appendChild(el);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+/* ---------------- camera start ---------------- */
+async function startLocalStream(){
+  try{
+    const constraints = {
+      audio: true,
+      video: { width: {ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}, facingMode: facingMode }
+    };
+    localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    localVideo.srcObject = localStream;
+  }catch(err){
+    console.error('getUserMedia error', err);
+    alert('Camera/Microphone access required. Error: ' + (err.message||err));
+  }
+}
+
+/* ---------------- PeerJS init ---------------- */
+async function initApp(){
+  await startLocalStream();
+
+  // generate peer id and room link
+  const myId = 'peer-' + Math.random().toString(36).slice(2,9);
+  const base = location.origin + location.pathname;
+  const link = base + '?peer=' + encodeURIComponent(myId);
+  roomLinkInput.value = link;
+
+  // create Peer
+  peer = new Peer(myId, { host: '0.peerjs.com', port: 443, secure: true });
+
+  peer.on('open', id => {
+    console.log('Peer open:', id);
+    // auto-call if url has ?peer=otherId (other initiated earlier)
+    const urlParams = new URLSearchParams(location.search);
+    const other = urlParams.get('peer');
+    if(other && other !== id){
+      outgoingCall(other);
+    }
+  });
+
+  peer.on('call', incoming => {
+    // answer incoming
+    incoming.answer(localStream);
+    currentCall = incoming;
+    incoming.on('stream', s => {
+      remoteVideo.srcObject = s;
+    });
+    setupDataConnectionOnCall(incoming);
+  });
+
+  peer.on('connection', c => {
+    conn = c;
+    attachConnHandlers();
+  });
+
+  peer.on('error', err => {
+    console.error('Peer error', err);
+    alert('PeerJS error: ' + (err && err.type ? err.type : err));
+  });
+}
+
+/* ---------------- call helpers ---------------- */
+function outgoingCall(otherId){
+  if(!peer || !localStream) return;
+  currentCall = peer.call(otherId, localStream);
+  currentCall.on('stream', s => remoteVideo.srcObject = s);
+  currentCall.on('close', ()=> console.log('call closed'));
+  // also open data conn
+  conn = peer.connect(otherId);
+  attachConnHandlers();
+}
+
+/* When a call exists, attach data connection handlers if not already */
+function setupDataConnectionOnCall(call){
+  // nothing special here - connection arrives via 'connection' event
+}
+
+/* ---------------- data connection (messages + files) ---------------- */
+function attachConnHandlers(){
+  if(!conn) return;
+  conn.on('open', ()=> console.log('data conn open'));
+  conn.on('data', data => {
+    try{
+      if(typeof data === 'string') {
+        addMessage(data, 'received');
+      } else if(data && data.type === 'text'){
+        addMessage(data.content, 'received');
+      } else if(data && data.type === 'file'){
+        addMessage(data.content, 'received', data.fileType);
+      }
+    }catch(e){ console.warn('data parse error', e); }
+  });
+  conn.on('close', ()=> console.log('data conn closed'));
+  conn.on('error', e => console.warn('conn error', e));
+}
+
+/* ---------------- send message & file ---------------- */
+sendBtn.addEventListener('click', sendMessage);
+textInput.addEventListener('keydown', e=>{ if(e.key==='Enter') sendMessage(); });
+
+function sendMessage(){
+  const txt = textInput.value.trim();
+  const file = fileInput.files[0];
+  if(txt){
+    addMessage(txt, 'sent');
+    if(conn && conn.open) conn.send({type:'text', content: txt});
+    textInput.value = '';
+  }
+  if(file){
+    // limit size to ~6-8MB to avoid big transfer issues
+    const MAX = 8 * 1024 * 1024;
+    if(file.size > MAX){
+      alert('File too large. Please choose <= 8MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = reader.result;
+      addMessage(dataUrl, 'sent', file.type);
+      if(conn && conn.open) conn.send({type:'file', content: dataUrl, fileType: file.type});
+    };
+    reader.readAsDataURL(file);
+    fileInput.value = '';
+  }
+}
+
+/* ---------------- controls ---------------- */
+switchBtn.addEventListener('click', async ()=>{
+  try{
+    facingMode = (facingMode === 'user') ? 'environment' : 'user';
+    if(localStream){
+      localStream.getTracks().forEach(t=>t.stop());
+    }
+    await startLocalStream();
+    // replace sender track in active call
+    if(currentCall && currentCall.peerConnection){
+      const sender = currentCall.peerConnection.getSenders().find(s=>s.track && s.track.kind === 'video');
+      if(sender){
+        sender.replaceTrack(localStream.getVideoTracks()[0]);
+      }
+    }
+  }catch(err){ console.error('switch error', err); }
+});
+
+muteBtn.addEventListener('click', ()=>{
+  if(!localStream) return;
   muted = !muted;
-  localStream.getAudioTracks()[0].enabled = !muted;
-  document.getElementById("muteBtn").innerText = muted ? "🔇" : "🎤";
-}
+  localStream.getAudioTracks().forEach(t => t.enabled = !muted);
+  muteBtn.textContent = muted ? '🔇' : '🎤';
+});
 
-/* ---------------- SPEAKER BUTTON ---------------- */
-let speaker = true;
-function toggleSpeaker(){
-  speaker = !speaker;
-  document.getElementById("remoteVideo").muted = !speaker;
-  document.getElementById("spkBtn").innerText = speaker ? "🔊" : "🔈";
-}
+speakerBtn.addEventListener('click', ()=>{
+  speakerOn = !speakerOn;
+  remoteVideo.muted = !speakerOn;
+  speakerBtn.textContent = speakerOn ? '🔊' : '🔈';
+});
 
-/* ---------------- END CALL ---------------- */
-function endCall(){
-  pc.close();
-  alert("Call Ended");
+endBtn.addEventListener('click', ()=>{
+  try{ if(currentCall) currentCall.close(); }catch(e){}
+  try{ if(conn) conn.close(); }catch(e){}
+  try{ if(peer) peer.destroy(); }catch(e){}
+  // reload to reset state
   location.reload();
-}
+});
 
-/* ---------------- SWAP FULLSCREEN ---------------- */
-document.getElementById("localVideo").onclick = ()=>{
-  let remote = document.getElementById("remoteVideo");
-  let local = document.getElementById("localVideo");
+/* ---------------- PIP swap (tap) ---------------- */
+localVideo.addEventListener('click', ()=>{
+  // if local is large, make local small and remote full; else swap
+  const isLocalMin = localVideo.classList.contains('minimized');
+  if(isLocalMin){
+    localVideo.classList.remove('minimized');
+    remoteVideo.classList.remove('small');
+  } else {
+    localVideo.classList.add('minimized');
+    remoteVideo.classList.add('small');
+  }
+});
 
-  let temp = remote.srcObject;
-  remote.srcObject = local.srcObject;
-  local.srcObject = temp;
-};
+/* allow clicking remote to swap back (desktop) */
+remoteVideo.addEventListener('click', ()=>{
+  // swap roles: if remote small then make remote big and local small
+  if(remoteVideo.classList.contains('small')){
+    remoteVideo.classList.remove('small');
+    localVideo.classList.remove('minimized');
+  } else {
+    // make remote small and local minimized (alternate)
+    remoteVideo.classList.add('small');
+    localVideo.classList.add('minimized');
+  }
+});
 
-/* ---------------- MOVE SMALL VIDEO ---------------- */
-let lv = document.getElementById("localVideo");
-lv.onmousedown = drag;
-lv.ontouchstart = drag;
+/* ---------------- copy room link ---------------- */
+copyBtn.addEventListener('click', ()=>{
+  if(roomLinkInput.value){
+    navigator.clipboard.writeText(roomLinkInput.value).then(()=> {
+      copyBtn.textContent = 'Copied';
+      setTimeout(()=>copyBtn.textContent = 'Copy',1200);
+    }).catch(()=> alert('Copy failed'));
+  }
+});
 
-function drag(e){
-  e.preventDefault();
-  let move = (ev)=>{
-    let x = (ev.touches?ev.touches[0].clientX:ev.clientX) - 60;
-    let y = (ev.touches?ev.touches[0].clientY:ev.clientY) - 80;
-    lv.style.left = x+"px";
-    lv.style.top = y+"px";
-  };
-  document.onmousemove = move;
-  document.ontouchmove = move;
-  document.onmouseup = ()=>{document.onmousemove=null;};
-  document.ontouchend = ()=>{document.ontouchmove=null;};
-}
+/* ---------------- quick debug - show console logs if any error ---------------- */
+window.addEventListener('unhandledrejection', e => console.error('UnhandledRejection', e.reason));
+window.addEventListener('error', e => console.error('Error', e));
+
 </script>
-
 </body>
-                                     </html>
+</html>
